@@ -93,6 +93,8 @@ Deno.serve(async (req: Request) => {
     const pythonBackendUrl = Deno.env.get('PYTHON_BACKEND_URL');
 
     let videoUrl;
+    let renderMessage = '';
+
     if (pythonBackendUrl) {
       try {
         const renderResponse = await fetch(`${pythonBackendUrl}/render`, {
@@ -105,25 +107,30 @@ Deno.serve(async (req: Request) => {
         if (renderResponse.ok) {
           const result = await renderResponse.json();
           videoUrl = result.video_url;
+          renderMessage = 'Video rendered successfully by Python backend';
         } else {
-          throw new Error('Python backend render failed');
+          const errorText = await renderResponse.text();
+          console.error('Python backend render failed:', errorText);
+          throw new Error(`Python backend render failed: ${errorText}`);
         }
       } catch (error) {
         console.error('Python backend error:', error);
-        videoUrl = `${supabaseUrl}/storage/v1/object/public/videos/video_${video_id}_template_${template_id}.mp4`;
+        // Generate mock URL as fallback
+        videoUrl = `${supabaseUrl}/storage/v1/object/public/video-renders/video_${video_id}_template_${template_id}.mp4`;
+        renderMessage = 'Python backend unavailable. Mock URL generated. Video will need manual rendering.';
       }
     } else {
       // For demonstration, generate a mock video URL
-      videoUrl = `${supabaseUrl}/storage/v1/object/public/videos/video_${video_id}_template_${template_id}.mp4`;
+      videoUrl = `${supabaseUrl}/storage/v1/object/public/video-renders/video_${video_id}_template_${template_id}.mp4`;
+      renderMessage = 'PYTHON_BACKEND_URL not configured. Please set up Python backend for actual video rendering. Mock URL generated for testing.';
     }
 
     return new Response(
       JSON.stringify({
         success: true,
         video_url: videoUrl,
-        message: pythonBackendUrl
-          ? 'Video rendered successfully'
-          : 'Video URL generated. Configure PYTHON_BACKEND_URL for actual rendering.',
+        message: renderMessage,
+        has_python_backend: !!pythonBackendUrl,
         render_spec: renderSpec
       }),
       {

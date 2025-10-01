@@ -196,6 +196,7 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
         .replace(/\*\*/g, '')
         .trim();
 
+      // Generate audio using ElevenLabs
       const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
         method: 'POST',
         headers: {
@@ -226,29 +227,48 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
         throw new Error('Generated audio is empty');
       }
 
-      const audioFileName = `audio_${targetVideo.id}_${Date.now()}.mp3`;
+      // Convert blob to base64 for edge function upload
+      const reader = new FileReader();
+      const base64Audio = await new Promise<string>((resolve, reject) => {
+        reader.onloadend = () => {
+          const base64 = reader.result as string;
+          resolve(base64.split(',')[1]); // Remove data:audio/mpeg;base64, prefix
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(audioBlob);
+      });
 
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('audio-files')
-        .upload(audioFileName, audioBlob, {
-          contentType: 'audio/mpeg',
-          upsert: true,
-          cacheControl: '3600'
-        });
+      // Use edge function to upload with service role (bypasses RLS)
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const uploadResponse = await fetch(`${supabaseUrl}/functions/v1/upload-audio`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({
+          video_id: targetVideo.id,
+          audio_base64: base64Audio,
+          filename: `audio_${targetVideo.id}_${Date.now()}.mp3`
+        })
+      });
 
-      if (uploadError) {
-        console.error('Storage upload error:', uploadError);
-        throw new Error(`Storage upload failed: ${uploadError.message}`);
+      if (!uploadResponse.ok) {
+        const errorData = await uploadResponse.json().catch(() => ({ error: 'Upload failed' }));
+        throw new Error(`Audio upload failed: ${errorData.error || uploadResponse.statusText}`);
       }
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('audio-files')
-        .getPublicUrl(audioFileName);
+      const uploadResult = await uploadResponse.json();
 
+      if (!uploadResult.success || !uploadResult.audio_url) {
+        throw new Error('Invalid upload response');
+      }
+
+      // Update video record
       const { data: updated, error: updateError } = await supabase
         .from('videos')
         .update({
-          audio_url: publicUrl,
+          audio_url: uploadResult.audio_url,
           status: 'audio_generated',
           updated_at: new Date().toISOString()
         })
@@ -384,11 +404,17 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
         throw new Error('Invalid video URL received');
       }
 
+      // Show informative message if Python backend not configured
+      if (!result.has_python_backend) {
+        console.warn('Python backend not configured:', result.message);
+        setError(`⚠️ ${result.message}`);
+      }
+
       const { data: updated, error: updateError } = await supabase
         .from('videos')
         .update({
           video_url: result.video_url,
-          status: 'video_rendered',
+          status: result.has_python_backend ? 'video_rendered' : 'render_pending',
           updated_at: new Date().toISOString()
         })
         .eq('id', videoRecord.id)
