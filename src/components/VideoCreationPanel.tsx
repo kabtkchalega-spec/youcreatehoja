@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Question } from '../types/database';
-import { FileText, Mic, Captions, Video, CheckCircle, Loader, AlertCircle } from 'lucide-react';
+import { FileText, Mic, Captions, Video, CheckCircle, Loader, AlertCircle, Download, Play } from 'lucide-react';
 
 interface VideoCreationPanelProps {
   courseId: number;
@@ -18,6 +18,13 @@ interface VideoRecord {
   template_id: number;
 }
 
+interface CaptionSegment {
+  start: number;
+  end: number;
+  text: string;
+  words?: Array<{ word: string; start: number; end: number }>;
+}
+
 interface GeneratedScript {
   text: string;
   examName: string;
@@ -29,6 +36,9 @@ export default function VideoCreationPanel({ courseId, question }: VideoCreation
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [availableVideos, setAvailableVideos] = useState<VideoRecord[]>([]);
+  const [selectedContent, setSelectedContent] = useState<'script' | 'captions' | null>(null);
+  const [showScriptPreview, setShowScriptPreview] = useState(false);
+  const [showCaptionPreview, setShowCaptionPreview] = useState(false);
 
   const GEMINI_API_KEY = 'AIzaSyDgShKEEeX9viEQ90JHAUBfwQqlu0c9rBw';
   const VOICE_API_KEY = 'sk_78d719766a3026b96c79d89fefeac203b978509b03404756';
@@ -219,7 +229,7 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
       const audioFileName = `audio_${targetVideo.id}_${Date.now()}.mp3`;
 
       const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('videos')
+        .from('audio-files')
         .upload(audioFileName, audioBlob, {
           contentType: 'audio/mpeg',
           upsert: true,
@@ -232,7 +242,7 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
       }
 
       const { data: { publicUrl } } = supabase.storage
-        .from('videos')
+        .from('audio-files')
         .getPublicUrl(audioFileName);
 
       const { data: updated, error: updateError } = await supabase
@@ -412,6 +422,22 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
     return statusMap[step]?.includes(videoRecord.status) ? 'completed' : 'pending';
   };
 
+  const downloadAudio = () => {
+    if (!videoRecord?.audio_url) return;
+    const link = document.createElement('a');
+    link.href = videoRecord.audio_url;
+    link.download = `audio_${videoRecord.id}.mp3`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = (seconds % 60).toFixed(2);
+    return `${mins}:${secs.padStart(5, '0')}`;
+  };
+
   return (
     <div className="bg-slate-800 rounded-lg p-6 border border-slate-700">
       <h3 className="text-xl font-semibold text-white mb-6">Video Creation Pipeline</h3>
@@ -546,14 +572,38 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
         )}
 
         {videoRecord?.audio_url && (
-          <div className="ml-8 p-4 bg-slate-700 rounded-lg">
-            <h4 className="text-green-400 font-medium mb-2 flex items-center gap-2">
+          <div className="ml-8 p-4 bg-slate-700 rounded-lg space-y-3">
+            <h4 className="text-green-400 font-medium flex items-center gap-2">
               <CheckCircle className="w-4 h-4" />
               Audio generated successfully
             </h4>
-            <audio controls className="w-full mt-2">
+            <audio controls className="w-full">
               <source src={videoRecord.audio_url} type="audio/mpeg" />
             </audio>
+            <div className="flex gap-2">
+              <button
+                onClick={downloadAudio}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                Download Audio
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedContent('script');
+                  setShowScriptPreview(!showScriptPreview);
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-600 hover:bg-slate-500 text-white text-sm rounded transition-colors"
+              >
+                <FileText className="w-4 h-4" />
+                {showScriptPreview ? 'Hide' : 'View'} Script
+              </button>
+            </div>
+            {showScriptPreview && videoRecord.script && (
+              <div className="p-3 bg-slate-600 rounded max-h-60 overflow-y-auto">
+                <p className="text-slate-200 text-sm whitespace-pre-wrap">{videoRecord.script}</p>
+              </div>
+            )}
           </div>
         )}
 
@@ -585,6 +635,41 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
           </div>
         </div>
 
+        {videoRecord?.captions_data && (
+          <div className="ml-8 p-4 bg-slate-700 rounded-lg space-y-3">
+            <h4 className="text-green-400 font-medium flex items-center gap-2">
+              <CheckCircle className="w-4 h-4" />
+              Captions generated successfully
+            </h4>
+            <button
+              onClick={() => {
+                setSelectedContent('captions');
+                setShowCaptionPreview(!showCaptionPreview);
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-slate-600 hover:bg-slate-500 text-white text-sm rounded transition-colors"
+            >
+              <Captions className="w-4 h-4" />
+              {showCaptionPreview ? 'Hide' : 'View'} Captions
+            </button>
+            {showCaptionPreview && (
+              <div className="p-3 bg-slate-600 rounded max-h-96 overflow-y-auto">
+                <div className="space-y-2">
+                  {Array.isArray(videoRecord.captions_data) && videoRecord.captions_data.map((caption: CaptionSegment, index: number) => (
+                    <div key={index} className="p-2 bg-slate-700 rounded">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-blue-400 font-mono">
+                          {formatTime(caption.start)} → {formatTime(caption.end)}
+                        </span>
+                      </div>
+                      <p className="text-slate-200 text-sm">{caption.text}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Step 4: Render Video */}
         <div className="flex items-center gap-4">
           <div className="flex-1">
@@ -614,26 +699,34 @@ Make the script conversational, engaging, and suitable for voice-over. Use simpl
         </div>
 
         {videoRecord?.video_url && (
-          <div className="mt-6 p-4 bg-green-900/20 border border-green-500 rounded-lg">
-            <p className="text-green-400 font-medium mb-3">Video Ready!</p>
+          <div className="mt-6 p-4 bg-green-900/20 border border-green-500 rounded-lg space-y-4">
+            <h4 className="text-green-400 font-medium flex items-center gap-2">
+              <CheckCircle className="w-5 h-5" />
+              Video Ready!
+            </h4>
+            <video controls className="w-full rounded-lg">
+              <source src={videoRecord.video_url} type="video/mp4" />
+            </video>
             <div className="flex gap-3">
               <a
                 href={videoRecord.video_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+                className="flex items-center gap-2 px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
               >
-                Preview Video
+                <Play className="w-4 h-4" />
+                Open in New Tab
               </a>
               <a
                 href={videoRecord.video_url}
                 download={`video_${videoRecord.id}.mp4`}
-                className="px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+                className="flex items-center gap-2 px-6 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
               >
+                <Download className="w-4 h-4" />
                 Download Video
               </a>
             </div>
-            <p className="text-slate-400 text-xs mt-3 break-all">{videoRecord.video_url}</p>
+            <p className="text-slate-400 text-xs break-all">{videoRecord.video_url}</p>
           </div>
         )}
       </div>
